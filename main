@@ -1,0 +1,273 @@
+from machine import Pin, I2C, Timer, UART,PWM
+import utime
+import _thread
+from control_RST_motor_DC import  Motor
+from math import pi
+
+
+velocity=0
+angular=0
+flag=0
+
+
+class BM_uControllerG05():
+    
+    uartData = ""
+    
+    def __init__(self, uart_id=0):
+    # RPi pico - not tested with esp32 (UART implementations seem to vary)
+        self.debug = ""
+        self.uart = UART(uart_id, 9600,bits=8, parity=None, stop=1) #uart0 uses pins 1 (tx) and 2 (rx)
+
+    def start(self, debug=False):
+        self.debug = debug
+        self.statusTimer = Timer()
+        self.statusTimer.init(freq=20,mode=Timer.PERIODIC,callback=self._monitorStatus)
+
+    def _monitorStatus(self, timer):
+        self._uartListen()
+
+    def _uartListen(self):
+        #print('listener')
+        while (self.uart.any()):
+            uartIn = self.uart.read(1).decode("utf-8")
+            if uartIn == "\n":
+                #print(uartIn)
+                self._processData()
+                self.uartData = ""
+            else:
+                self.uartData += uartIn
+
+    def _processData(self):
+    # print(str(self.uart.any()))
+        command = ""
+        global velocity
+        global angular
+
+        print("_processData:" + self.uartData + " " + str(len(self.uartData)))
+        
+        if len(self.uartData) == 6:
+            command = self.uartData[0:2]
+            
+            if command not in ["AV","LV"]:
+                command = ""
+                
+            if command in ["LV"]:
+                try:
+                   velocity = int(self.uartData[2:6])
+                except:
+                    command = ""
+                    velocity = 0
+                    
+            if command in ["AV"]:
+                try:
+                   angular = int(self.uartData[2:6]) 
+                except:
+                    command = ""
+                    angular = 0
+                    
+        if len(command) > 0:
+            if self.debug:
+                print("commandMsg:", self.uartData + " command:" +command +" velocity:" + str(velocity))
+                self._send_pose("R",(velocity))
+            elif command == "RV":
+                print('RV ',velocity)
+                #print(velocity)
+
+    def _send_pose(self, mode ,vel):
+        totalMovement = vel
+        motorMode = mode
+        movementString = motorMode + "%+06d" % totalMovement + "\n"
+        #print(movementString)
+        self.uart.write(movementString.encode())
+
+def execute_speed(motor_l,motor_r):
+    
+    global flag
+    
+    led = Pin(25, Pin.OUT)
+    
+    # Parametros geometricos de nuestro robot
+    a=0.1 # radio en m
+    L=0.3 # medio ancho en m
+
+    # Instanciamos  los 2 motores
+    
+    #Motor1
+
+    # time setup
+    previous_time = 0
+    sample_time = 30
+
+    # scale input
+    conversion_factor = 100 / (65535)
+    
+    # Inicializar variables controlador
+    ukL = 0
+    ykL=0
+    ukL1=0
+    ykL1=0
+    ukR = 0
+    ykR=0
+    ukR1=0
+    ykR1=0
+
+    while True:
+        
+        led.off()
+        # time management
+        current_time = utime.ticks_ms()
+        delta_time = utime.ticks_diff(current_time, previous_time)
+        
+        
+        
+        # sampling conditional
+        if delta_time > sample_time and flag==0:
+            led.on()
+            
+            #setPoint
+            ang_real=angular/50 #se limita el giro del robot a 2 rad/s
+            vel_real=velocity/50 #se limita la velocidad a 2 m/s
+            
+            wr=ang_real*L/(4*a)+vel_real/a
+            wl=-ang_real*L/(4*a)+vel_real/a
+            setPR=100/220*60/(2*pi)*wr # MODIFICAR
+            setPL=100/220*60/(2*pi)*wl
+            
+            ######CONTROL MOTOR LEFT######
+            velL=motor_l.encoder2speed()/220*100
+            ykL=velL
+            xkL=setPL
+            ukL=0.57*xkL-1.148*ykL+0.58*ykL1 + ukL1
+            ykL1=ykL
+            ukL1=ukL
+            errorL = setPL - velL
+            
+                  
+            if ukL > 100:
+                ukL = 100
+            
+            elif ukL < -100:
+                ukL = -100
+           
+            if setPL!=0:
+                if ukL < 0: 
+                    motor_l.set_motor(1,abs(ukL))
+                    #motor_l.set_motor(-1,abs(setPL))
+                    #print('reverse')
+                else:
+                    motor_l.set_motor(-1,abs(ukL))
+                    #motor_l.set_motor(1,abs(setPL))
+            else:
+                
+                motor_l.set_motor(1,0)
+                
+                
+            ######CONTROL MOTOR RIGHT######
+            velR=-motor_r.encoder2speed()/220*100
+            ykR=velR
+            xkR=setPR
+            ukR=0.57*xkR-1.148*ykR+0.58*ykR1 + ukR1
+            ykR1=ykR
+            ukR1=ukR
+            errorR = setPR - velR
+            
+            
+            
+            if ukR > 100:
+                ukR = 100
+            
+            elif ukR < -100:
+                ukR = -100
+            
+            if setPR!=0:
+                if ukR < 0: 
+                    motor_r.set_motor(-1,abs(ukR))
+                    #motor_r.set_motor(-1,abs(setPR))
+                    #print('reverse')
+                else:
+                    motor_r.set_motor(1,abs(ukR))
+                    #motor_r.set_motor(1,abs(setPR))
+            else:
+                motor_r.set_motor(1,0)
+                
+            previous_time = current_time
+            
+            print("setPR",setPR,"setPL",setPL,"ukR", ukR,"ukL", ukL, "velR", velR, "velL", velL)
+            
+            
+            
+    print('\n------- End Program --------\n')
+
+
+def instruccion(bombilla,motor_l,motor_r):
+    # aqui el robot se para, echa pintura y se aleja de la mina y espera 5 segundos
+    
+    print("mina detectada")
+
+    #se para el motor
+    print("pare del motor")
+    motor_l.set_motor(-1,0)
+    motor_r.set_motor(-1,0)
+    
+    utime.sleep(1)
+    
+    # Se echa la pintura
+    print("se echa pintura")
+    bombilla.value(1)
+    utime.sleep(2)
+    bombilla.value(0)
+    
+    utime.sleep(5)
+    
+    #se atrasa el motor
+    print("atraso del motor")
+    motor_l.set_motor(-1,30)
+    motor_r.set_motor(-1,30)
+    utime.sleep(2)
+    motor_l.set_motor(-1,0)
+    motor_r.set_motor(-1,0)
+    
+    utime.sleep(5)
+    
+
+
+def interrupt(pin):
+    sensor.irq(handler=None)
+    global flag
+    flag=1
+    instruccion(bombilla,motor_l,motor_r)
+    flag=0
+    sensor.irq(handler=interrupt)
+
+
+def main():
+
+    bmc = BM_uControllerG05()
+    _thread.start_new_thread(bmc.start,(True,))
+    
+    global sensor
+    global bombilla
+    global motor_r
+    global motor_l
+    
+    pin_pwm_1, pin_in1_1, pin_in2_1, sensorA_pin_1, sensorB_pin_1, freq_1 = 6, 13, 14, 3, 2, 1000
+    motor_l = Motor(pin_pwm_1, pin_in1_1, pin_in2_1, sensorA_pin_1, sensorB_pin_1, freq_1)
+    #Motor2
+    pin_pwm_2, pin_in1_2, pin_in2_2, sensorA_pin_2, sensorB_pin_2, freq_2 = 16, 17, 18, 4, 5, 1000
+    motor_r = Motor(pin_pwm_2, pin_in1_2, pin_in2_2, sensorA_pin_2, sensorB_pin_2, freq_2)
+    
+    pin_sensor = 8
+    pin_bombilla = 9
+    bombilla=Pin(pin_bombilla,Pin.OUT)
+    
+    sensor=Pin(pin_sensor, Pin.IN)
+    sensor.irq(trigger=Pin.IRQ_RISING , handler=interrupt)
+    
+    execute_speed(motor_l,motor_r)
+    
+    print("UART serial started")
+
+
+if __name__ == "__main__":
+    main()
