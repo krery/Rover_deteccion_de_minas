@@ -1,0 +1,135 @@
+from machine import Pin, I2C, Timer, UART, PWM
+import machine
+import utime
+
+
+class Motor():
+    
+    max_duty_u16=65536
+    
+    def __init__(self, pin_num_pwm, pin_num_in1, pin_num_in2,sensorA_pin, sensorB_pin, freq=1000):
+
+        # def. attributes 
+        self._pwm = PWM(Pin(pin_num_pwm))
+        self._pin_in1 = Pin(pin_num_in1, Pin.OUT)
+        self._pin_in2 = Pin(pin_num_in2, Pin.OUT)
+        self._pwm.freq(freq)
+        self.sensorA = Pin(sensorA_pin, Pin.IN)
+        self.sensorB = Pin(sensorB_pin, Pin.IN)
+
+        # Encoder and motor parameters
+        self.ppr = 16 
+        self.decoder_number = 1 # number of edge count (falling, rising, both)*sensor 
+        self.gear_ratio = 50
+
+        # ticks counter
+        self.encoder_count = 0
+
+        # speed time variables
+        self.prevT = 0
+        self.posPrev = 0
+          # IRQ initialization
+        self.sensorA.irq(trigger=Pin.IRQ_FALLING,handler=self._motorEncoderCallbackL)
+        
+        
+    def set_motor(self, direccion, speed):    
+        #  functions to set motor controller signals
+        #print("coucou")
+        if direccion == 1:
+            self._pin_in1.off()
+            self._pin_in2.on()
+            
+        elif direccion == -1:
+            self._pin_in1.on()
+            self._pin_in2.off()
+        else:
+            self._pin_in1.off()
+            self._pin_in2.off()
+
+        self._pwm.duty_u16(self.speedToU16(abs(speed)))
+    
+    @classmethod
+    # Motor().speedToU16
+    # mymotor=Motor(parametros)
+    # mymotor.set_motor
+    
+    def speedToU16(cls, speed):
+        # Return a duty_u16 value based on percentage speed
+#         print(int(speed))
+        return int(speed * cls.max_duty_u16/100)
+
+    def _motorEncoderCallbackL(self,pin):
+        if self.sensorB.value() > 0:
+            self.encoder_count += 1
+        else:
+            self.encoder_count -= 1
+
+    def encoder2speed(self):
+
+        currT = utime.ticks_ms()
+        deltaT = utime.ticks_diff(currT, self.prevT)*0.001
+
+        self.prevT = currT # current time
+
+        #pos_filt = lp_ticks.filt(pos)
+
+        vel = (self.encoder_count - self.posPrev)/deltaT
+
+       # storage values
+        self.posPrev = self.encoder_count #; // current tick 
+        # vel in rpm
+        self.vel_rpm_raw = ((vel)/(self.ppr * self.decoder_number * self.gear_ratio))*(60) #;
+        
+        return self.vel_rpm_raw
+
+
+# class SensorInterrupt():
+#     
+#     def __init__(self, pin_sensor, pin_bombilla, motor_l, motor_r):
+# 
+#         self.sensor=Pin(pin_sensor, Pin.IN,Pin.PULL_DOWN)
+#         self.bombilla=Pin(pin_bombilla, Pin.OUT)
+#         self.motor_l=motor_l
+#         self.motor_r=motor_r
+#         self.sensor.irq(trigger=Pin.IRQ_RISING , handler=self.instruccion)
+#         #self.sensor.irq(handler=self.instruccion)
+# 
+#     def instruccion(self):
+#         # aqui el robot se para, echa pintura y se aleja de la mina y espera 5 segundos
+#         self.sensor.irq(trigger=Pin.IRQ_RISING,handler=None)
+#         print("mina detectada")
+# 
+#         
+#         #se para el motor
+#         print("pare del motor")
+#         self.motor_l.set_motor(-1,0)
+#         self.motor_r.set_motor(-1,0)
+#         
+#         utime.sleep(1)
+#         
+#         # Se echa la pintura
+#         print("se echa pintura")
+#         self.bombilla.value(1)
+#         utime.sleep(2)
+#         self.bombilla.value(0)
+#         
+#         utime.sleep(5)
+#         
+#         #se atrasa el motor
+#         print("atraso del motor")
+#         self.motor_l.set_motor(-1,30)
+#         self.motor_r.set_motor(-1,30)
+#         utime.sleep(2)
+#         self.motor_l.set_motor(-1,0)
+#         self.motor_r.set_motor(-1,0)
+#         
+#         utime.sleep(5)
+#         
+#         self.sensor.irq(trigger=Pin.IRQ_RISING,handler=self.instruccion)
+# 
+
+#  
+# 
+# def map(x, in_min, in_max, out_min, out_max):
+#   return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min
+    
